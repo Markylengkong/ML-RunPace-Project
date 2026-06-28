@@ -1406,6 +1406,23 @@ export default function RunPaceDashboard() {
                 ))}
               </div>
 
+              {/* Development Team */}
+              <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-5">
+                <h3 className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-4">Development Team</h3>
+                <div className="space-y-2">
+                  {([
+                    { name: 'Josep Natanael Pasaribu',    id: '2802486583' },
+                    { name: 'Marcellino Varian Saputra',  id: '2802457652' },
+                    { name: 'Mark Philip Lengkong',       id: '2802491715' },
+                  ]).map(({ name, id }) => (
+                    <div key={id} className="flex items-center justify-between py-2.5 border-b border-slate-800 last:border-0">
+                      <span className="text-sm font-semibold text-slate-200">{name}</span>
+                      <span className="text-xs font-mono text-slate-500">{id}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-4">
                 <button type="button" onClick={goNext} className="px-5 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-widest border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 hover:border-teal-400/50 transition-all duration-150 cursor-pointer">Next</button>
               </div>
