@@ -36,13 +36,27 @@ _LOAD_ERROR              = None
 _hybrid_cfg              = {}
 classifier_feature_names = []
 feature_names            = []
+_clf_models              = {}
+_reg_models              = {}
 
 try:
-    model_klasifikasi = joblib.load(os.path.join(MODEL_DIR, 'runpace_classifier.pkl'))
-    model_rf          = joblib.load(os.path.join(MODEL_DIR, 'runpace_regressor.pkl'))
+    _clf_models['rf'] = joblib.load(os.path.join(MODEL_DIR, 'runpace_classifier.pkl'))
+    _reg_models['rf'] = joblib.load(os.path.join(MODEL_DIR, 'runpace_regressor.pkl'))
 
-    classifier_feature_names = list(model_klasifikasi.feature_names_in_)
-    feature_names            = list(model_rf.feature_names_in_)
+    for algo, fname in [('svm', 'runpace_classifier_svm.pkl'), ('knn', 'runpace_classifier_knn.pkl')]:
+        _path = os.path.join(MODEL_DIR, fname)
+        if os.path.exists(_path):
+            _clf_models[algo] = joblib.load(_path)
+            print(f"[RunPace] Loaded classifier: {algo}")
+
+    for algo, fname in [('lr', 'runpace_regressor_lr.pkl'), ('gb', 'runpace_regressor_gb.pkl')]:
+        _path = os.path.join(MODEL_DIR, fname)
+        if os.path.exists(_path):
+            _reg_models[algo] = joblib.load(_path)
+            print(f"[RunPace] Loaded regressor: {algo}")
+
+    classifier_feature_names = list(_clf_models['rf'].feature_names_in_)
+    feature_names            = list(_reg_models['rf'].feature_names_in_)
 
     print(f"[RunPace] Classifier fitur ({len(classifier_feature_names)}): "
           f"{classifier_feature_names}")
@@ -264,17 +278,15 @@ def model_info():
     return jsonify({
         'status'    : 'ok',
         'classifier': {
-            'type'        : 'RandomForestClassifier',
-            'n_estimators': int(model_klasifikasi.n_estimators),
-            'classes'     : list(model_klasifikasi.classes_),
-            'features'    : classifier_feature_names,
-            'note'        : 'Uses training_dist_km (historical profile), NOT race distance',
+            'type'    : type(_clf_models['rf']).__name__,
+            'classes' : list(_clf_models['rf'].classes_),
+            'features': classifier_feature_names,
+            'note'    : 'Uses training_dist_km (historical profile), NOT race distance',
         },
         'regressor' : {
-            'type'        : 'RandomForestRegressor',
-            'n_estimators': int(model_rf.n_estimators),
-            'features'    : feature_names,
-            'note'        : 'Uses jarak_km (official race distance) for duration prediction',
+            'type'    : type(_reg_models['rf']).__name__,
+            'features': feature_names,
+            'note'    : 'Uses jarak_km (official race distance) for duration prediction',
         },
         'hybrid_formula': {
             'alpha_physics'           : _hybrid_cfg['best_alpha'],
@@ -294,9 +306,17 @@ def predict_runpace():
         }), 503
 
     # 1. Parse dan validasi input
-    parsed, err = _validate_input(request.get_json(force=True, silent=True) or {})
+    data = request.get_json(force=True, silent=True) or {}
+    parsed, err = _validate_input(data)
     if err:
         return jsonify({'status': 'error', 'message': err}), 400
+
+    _clf_algo     = data.get('classifier_algo', 'rf')
+    _reg_algo     = data.get('regressor_algo', 'rf')
+    active_clf    = _clf_models.get(_clf_algo, _clf_models['rf'])
+    active_reg    = _reg_models.get(_reg_algo, _reg_models['rf'])
+    clf_algo_used = _clf_algo if _clf_algo in _clf_models else 'rf'
+    reg_algo_used = _reg_algo if _reg_algo in _reg_models else 'rf'
 
     training_dist_km  = parsed['training_dist_km']
     jarak_km          = parsed['jarak_km']
@@ -323,11 +343,11 @@ def predict_runpace():
         columns=classifier_feature_names
     )
 
-    raw_kasta = model_klasifikasi.predict(input_class)[0]
-    proba_raw = model_klasifikasi.predict_proba(input_class)[0]
+    raw_kasta = active_clf.predict(input_class)[0]
+    proba_raw = active_clf.predict_proba(input_class)[0]
     confidence = {
         str(kls): round(float(prob), 4)
-        for kls, prob in zip(model_klasifikasi.classes_, proba_raw)
+        for kls, prob in zip(active_clf.classes_, proba_raw)
     }
 
     # ---------------------------------------------------------------------------
@@ -368,7 +388,7 @@ def predict_runpace():
     )
 
     # 4. Prediksi durasi dari RF Regressor
-    pred_rf_detik = float(model_rf.predict(input_reg)[0])
+    pred_rf_detik = float(active_reg.predict(input_reg)[0])
 
     # 5. Formula Hybrid
     alpha        = _hybrid_cfg['best_alpha']
@@ -411,6 +431,7 @@ def predict_runpace():
             'penalty_seconds'      : round(penalty_seconds, 1),
             'gate_triggered'       : len(gate_reasons) > 0,
             'gate_reasons'         : gate_reasons,
+            'algo_used'            : {'classifier': clf_algo_used, 'regressor': reg_algo_used},
         },
     }), 200
 

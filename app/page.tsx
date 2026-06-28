@@ -295,6 +295,7 @@ export default function RunPaceDashboard() {
 
   // ── Dashboard / Sidebar navigation state ─────────────────────────────────────
   const [activeTab,       setActiveTab]       = useState<ActiveTab>('about');
+  const [visitedTabs,     setVisitedTabs]     = useState<Set<ActiveTab>>(new Set(['about']));
   const [edaFeature,      setEdaFeature]      = useState<'Distance' | 'ElapsedTime' | 'Elevation'>('Distance');
   const [edaChartType,    setEdaChartType]    = useState<'Histogram' | 'Boxplot'>('Histogram');
   const [ppTestSize,      setPpTestSize]      = useState<number>(20);
@@ -350,6 +351,8 @@ export default function RunPaceDashboard() {
             gender,
             jam_lari:         jamLari,
             heart_rate:       avgHeartRate,
+            classifier_algo:  classifierAlgo,
+            regressor_algo:   regressorAlgo,
           }),
           signal: controller.signal,
         });
@@ -370,7 +373,7 @@ export default function RunPaceDashboard() {
     }, 200);
 
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [step, raceCategory, elevasiM, gender, jamLari, avgHeartRate, avgTrainingDistance, raceCfg.jarakKm]);
+  }, [step, raceCategory, elevasiM, gender, jamLari, avgHeartRate, avgTrainingDistance, raceCfg.jarakKm, classifierAlgo, regressorAlgo]);
 
   // ── Derived output ───────────────────────────────────────────────────────────
   const kastaCfg        = hasil ? KASTA_CONFIG[hasil.tingkat_pengalaman] : null;
@@ -458,6 +461,19 @@ export default function RunPaceDashboard() {
     setTimeout(() => { setIsTraining(false); setTrainDone(true); }, 2200);
   };
 
+  // ── Tab navigation helpers ───────────────────────────────────────────────────
+  const TAB_ORDER: ActiveTab[] = ['about', 'eda', 'preprocessing', 'training', 'evaluation', 'simulator'];
+
+  const navigateTo = (id: ActiveTab) => {
+    setActiveTab(id);
+    setVisitedTabs(prev => new Set([...prev, id]));
+  };
+
+  const goNext = () => {
+    const idx = TAB_ORDER.indexOf(activeTab);
+    if (idx < TAB_ORDER.length - 1) navigateTo(TAB_ORDER[idx + 1]);
+  };
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <>
@@ -524,6 +540,16 @@ export default function RunPaceDashboard() {
             <p className="text-[9px] text-slate-600 mt-1.5 font-medium uppercase tracking-widest">ML Dashboard</p>
           </div>
           <nav className="flex-1 px-3 py-4 space-y-1">
+            <div className="px-1 pb-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">Progress</span>
+                <span className="text-[9px] font-mono text-slate-500">{visitedTabs.size}/6</span>
+              </div>
+              <div className="h-0.5 bg-slate-800 rounded-full overflow-hidden">
+                <div className="h-full bg-teal-500/60 rounded-full transition-all duration-500"
+                  style={{ width: `${(visitedTabs.size / 6) * 100}%` }} />
+              </div>
+            </div>
             {([
               { id: 'about',         label: '1. About The Project', sub: 'Pipeline & Architecture'   },
               { id: 'eda',           label: '2. EDA',               sub: 'Exploratory Data Analysis' },
@@ -532,13 +558,20 @@ export default function RunPaceDashboard() {
               { id: 'evaluation',    label: '5. Evaluation',        sub: 'Metrics & Sanity Gate'     },
               { id: 'simulator',     label: '6. Simulator',         sub: 'Predictive Testing'        },
             ] as { id: ActiveTab; label: string; sub: string }[]).map(({ id, label, sub }) => (
-              <button key={id} type="button" onClick={() => setActiveTab(id)}
+              <button key={id} type="button" onClick={() => navigateTo(id)}
                 className={`w-full text-left px-3 py-2.5 rounded-xl transition-all duration-150 cursor-pointer border ${
                   activeTab === id
                     ? 'bg-teal-500/15 border-teal-500/25'
-                    : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/60'
+                    : visitedTabs.has(id)
+                    ? 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                    : 'border-transparent text-slate-600 hover:text-slate-400 hover:bg-slate-800/40'
                 }`}>
-                <p className={`text-[11px] font-bold leading-tight ${activeTab === id ? 'text-teal-300' : ''}`}>{label}</p>
+                <div className="flex items-center justify-between">
+                  <p className={`text-[11px] font-bold leading-tight ${activeTab === id ? 'text-teal-300' : ''}`}>{label}</p>
+                  {visitedTabs.has(id) && activeTab !== id && (
+                    <span className="text-teal-600 text-[9px]">✓</span>
+                  )}
+                </div>
                 <p className={`text-[9px] leading-tight mt-0.5 ${activeTab === id ? 'text-teal-600' : 'text-slate-700'}`}>{sub}</p>
               </button>
             ))}
@@ -1335,6 +1368,9 @@ export default function RunPaceDashboard() {
                 ))}
               </div>
             </div>
+            <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-8">
+              <button type="button" onClick={goNext} className="px-5 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-widest border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 hover:border-teal-400/50 transition-all duration-150 cursor-pointer">Next →</button>
+            </div>
           )}
 
           {/* ══ TAB 2: EDA ══════════════════════════════════════════════════ */}
@@ -1466,6 +1502,9 @@ export default function RunPaceDashboard() {
                 </div>
               </div>
             </div>
+            <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-8">
+              <button type="button" onClick={goNext} className="px-5 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-widest border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 hover:border-teal-400/50 transition-all duration-150 cursor-pointer">Next →</button>
+            </div>
           )}
 
           {/* ══ TAB 3: DATA PREPROCESSING ═══════════════════════════════════ */}
@@ -1539,6 +1578,9 @@ export default function RunPaceDashboard() {
                   ))}
                 </div>
               </div>
+            </div>
+            <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-8">
+              <button type="button" onClick={goNext} className="px-5 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-widest border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 hover:border-teal-400/50 transition-all duration-150 cursor-pointer">Next →</button>
             </div>
           )}
 
@@ -1614,6 +1656,9 @@ export default function RunPaceDashboard() {
                   {isTraining && <p className="text-amber-400 animate-pulse">{'> Training in progress...'}</p>}
                 </div>
               )}
+            </div>
+            <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-8">
+              <button type="button" onClick={goNext} className="px-5 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-widest border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 hover:border-teal-400/50 transition-all duration-150 cursor-pointer">Next →</button>
             </div>
           )}
 
@@ -2127,6 +2172,9 @@ export default function RunPaceDashboard() {
                   ))}
                 </div>
               </div>
+            </div>
+            <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-8">
+              <button type="button" onClick={goNext} className="px-5 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-widest border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 hover:border-teal-400/50 transition-all duration-150 cursor-pointer">Next →</button>
             </div>
           )}
 
