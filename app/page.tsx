@@ -295,7 +295,7 @@ export default function RunPaceDashboard() {
 
   // ── Dashboard / Sidebar navigation state ─────────────────────────────────────
   const [activeTab,       setActiveTab]       = useState<ActiveTab>('about');
-  const [visitedTabs,     setVisitedTabs]     = useState<Set<ActiveTab>>(new Set(['about']));
+  const [unlockedTabs,    setUnlockedTabs]    = useState<Set<ActiveTab>>(new Set(['about']));
   const [edaFeature,      setEdaFeature]      = useState<'Distance' | 'ElapsedTime' | 'Elevation'>('Distance');
   const [edaChartType,    setEdaChartType]    = useState<'Histogram' | 'Boxplot'>('Histogram');
   const [ppTestSize,      setPpTestSize]      = useState<number>(20);
@@ -306,6 +306,8 @@ export default function RunPaceDashboard() {
   const [nEstimators,     setNEstimators]     = useState<number>(100);
   const [isTraining,      setIsTraining]      = useState<boolean>(false);
   const [trainDone,       setTrainDone]       = useState<boolean>(false);
+  const [trainMetrics,    setTrainMetrics]    = useState<{classifier:{algo:string;accuracy:number;samples:number;test_size:number};regressor:{algo:string;mae_minutes:number;mape:number;r2:number;samples:number};config:{random_state:number;scaling_method:string;n_estimators:number|string;train_samples:number}} | null>(null);
+  const [trainError,      setTrainError]      = useState<string | null>(null);
   const [evalView,        setEvalView]        = useState<'clustering' | 'classifier' | 'regressor'>('clustering');
   const [hoveredInsight,  setHoveredInsight]  = useState<string>('Hover over any chart element to see a detailed analytical insight here.');
 
@@ -454,24 +456,54 @@ export default function RunPaceDashboard() {
     }
   };
 
-  // ── Train model simulation ───────────────────────────────────────────────────
-  const handleTrainModel = () => {
+  // ── Real model training ──────────────────────────────────────────────────────
+  const handleTrainModel = async () => {
     setIsTraining(true);
     setTrainDone(false);
-    setTimeout(() => { setIsTraining(false); setTrainDone(true); }, 2200);
+    setTrainMetrics(null);
+    setTrainError(null);
+    try {
+      const res = await fetch('/api/retrain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          test_size:       ppTestSize / 100,
+          random_state:    ppRandomState,
+          scaling_method:  ppScalingMethod,
+          classifier_algo: classifierAlgo,
+          regressor_algo:  regressorAlgo,
+          n_estimators:    nEstimators,
+        }),
+      });
+      const json = await res.json();
+      if (json.status === 'success') {
+        setTrainMetrics(json.metrics);
+        setTrainDone(true);
+      } else {
+        setTrainError(json.message ?? 'Training gagal.');
+      }
+    } catch {
+      setTrainError('Backend tidak dapat dijangkau.');
+    } finally {
+      setIsTraining(false);
+    }
   };
 
   // ── Tab navigation helpers ───────────────────────────────────────────────────
   const TAB_ORDER: ActiveTab[] = ['about', 'eda', 'preprocessing', 'training', 'evaluation', 'simulator'];
 
   const navigateTo = (id: ActiveTab) => {
+    if (!unlockedTabs.has(id)) return;
     setActiveTab(id);
-    setVisitedTabs(prev => new Set([...prev, id]));
   };
 
   const goNext = () => {
     const idx = TAB_ORDER.indexOf(activeTab);
-    if (idx < TAB_ORDER.length - 1) navigateTo(TAB_ORDER[idx + 1]);
+    if (idx < TAB_ORDER.length - 1) {
+      const next = TAB_ORDER[idx + 1];
+      setUnlockedTabs(prev => new Set([...prev, next]));
+      setActiveTab(next);
+    }
   };
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -543,11 +575,11 @@ export default function RunPaceDashboard() {
             <div className="px-1 pb-3">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">Progress</span>
-                <span className="text-[9px] font-mono text-slate-500">{visitedTabs.size}/6</span>
+                <span className="text-[9px] font-mono text-slate-500">{unlockedTabs.size}/6</span>
               </div>
               <div className="h-0.5 bg-slate-800 rounded-full overflow-hidden">
                 <div className="h-full bg-teal-500/60 rounded-full transition-all duration-500"
-                  style={{ width: `${(visitedTabs.size / 6) * 100}%` }} />
+                  style={{ width: `${(unlockedTabs.size / 6) * 100}%` }} />
               </div>
             </div>
             {([
@@ -557,24 +589,27 @@ export default function RunPaceDashboard() {
               { id: 'training',      label: '4. Model Training',    sub: 'Config & Hyperparameters'  },
               { id: 'evaluation',    label: '5. Evaluation',        sub: 'Metrics & Sanity Gate'     },
               { id: 'simulator',     label: '6. Simulator',         sub: 'Predictive Testing'        },
-            ] as { id: ActiveTab; label: string; sub: string }[]).map(({ id, label, sub }) => (
-              <button key={id} type="button" onClick={() => navigateTo(id)}
-                className={`w-full text-left px-3 py-2.5 rounded-xl transition-all duration-150 cursor-pointer border ${
-                  activeTab === id
-                    ? 'bg-teal-500/15 border-teal-500/25'
-                    : visitedTabs.has(id)
-                    ? 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                    : 'border-transparent text-slate-600 hover:text-slate-400 hover:bg-slate-800/40'
-                }`}>
-                <div className="flex items-center justify-between">
-                  <p className={`text-[11px] font-bold leading-tight ${activeTab === id ? 'text-teal-300' : ''}`}>{label}</p>
-                  {visitedTabs.has(id) && activeTab !== id && (
-                    <span className="text-teal-600 text-[9px]">✓</span>
-                  )}
-                </div>
-                <p className={`text-[9px] leading-tight mt-0.5 ${activeTab === id ? 'text-teal-600' : 'text-slate-700'}`}>{sub}</p>
-              </button>
-            ))}
+            ] as { id: ActiveTab; label: string; sub: string }[]).map(({ id, label, sub }) => {
+              const unlocked = unlockedTabs.has(id);
+              const active   = activeTab === id;
+              return (
+                <button key={id} type="button" onClick={() => navigateTo(id)} disabled={!unlocked}
+                  className={`w-full text-left px-3 py-2.5 rounded-xl transition-all duration-150 border ${
+                    active
+                      ? 'bg-teal-500/15 border-teal-500/25 cursor-pointer'
+                      : unlocked
+                      ? 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 cursor-pointer'
+                      : 'border-transparent text-slate-700 cursor-not-allowed opacity-40'
+                  }`}>
+                  <div className="flex items-center justify-between">
+                    <p className={`text-[11px] font-bold leading-tight ${active ? 'text-teal-300' : ''}`}>{label}</p>
+                    {!unlocked && <span className="text-slate-700 text-[9px]">🔒</span>}
+                    {unlocked && !active && <span className="text-teal-600 text-[9px]">✓</span>}
+                  </div>
+                  <p className={`text-[9px] leading-tight mt-0.5 ${active ? 'text-teal-600' : 'text-slate-700'}`}>{sub}</p>
+                </button>
+              );
+            })}
           </nav>
           <div className="px-5 py-4 border-t border-slate-800/60">
             <p className="text-[9px] text-slate-700 font-mono">BINUS University · ML Final Project</p>
@@ -1637,23 +1672,29 @@ export default function RunPaceDashboard() {
                 className="w-full py-4 rounded-2xl text-sm font-black uppercase tracking-widest border transition-all duration-150 cursor-pointer disabled:opacity-50 bg-teal-500/15 border-teal-400/50 text-teal-300 hover:bg-teal-500/25 hover:border-teal-300/70 active:scale-[0.99]">
                 {isTraining ? 'Training Model...' : trainDone ? 'Retrain Model' : 'Train Model'}
               </button>
-              {(isTraining || trainDone) && (
+              {(isTraining || trainDone || trainError) && (
                 <div className="bg-slate-950 border border-slate-800/60 rounded-2xl p-5 font-mono text-[11px] space-y-1.5">
                   <p className="text-slate-600 mb-3">{'— Training Log ——————————————————————'}</p>
-                  {([
-                    { text: '> Loading dataset: 23,201 rows × 8 features',                         color: 'text-slate-400',   always: true  },
-                    { text: '> Applying StandardScaler for K-Means phase...',                       color: 'text-slate-400',   always: true  },
-                    { text: '> K-Means (k=4): Converged in 23 iterations',                        color: 'text-violet-400',  always: true  },
-                    { text: '> Adaptive Downsampling → 1,973 rows/class applied',                  color: 'text-amber-400',   always: true  },
-                    { text: `> Training RF Classifier (n_estimators=${nEstimators}, random_state=42)...`, color: 'text-slate-400', always: false },
-                    { text: '> Classifier Accuracy: 99.16% ✓',                                    color: 'text-teal-400',    always: false },
-                    { text: `> Training RF Regressor (n_estimators=${nEstimators})...`,            color: 'text-slate-400',   always: false },
-                    { text: '> Regressor MAPE: 11.52% | CV R²: 0.9285 ✓',                        color: 'text-teal-400',    always: false },
-                    { text: '> Models saved to /models/ ✓',                                       color: 'text-emerald-400', always: false },
-                  ] as { text: string; color: string; always: boolean }[]).map(({ text, color, always }, i) =>
-                    (always || trainDone) ? <p key={i} className={color}>{text}</p> : null
+                  {isTraining && (
+                    <>
+                      <p className="text-slate-400">{`> Loading dataset & cleaning...`}</p>
+                      <p className="text-slate-400">{`> Running K-Means clustering (k=3)...`}</p>
+                      <p className="text-slate-400">{`> Balancing classes & applying ${ppScalingMethod} scaling...`}</p>
+                      <p className="text-slate-400">{`> Splitting data (test=${ppTestSize}%, random_state=${ppRandomState})...`}</p>
+                      <p className="text-amber-400 animate-pulse">{`> Training ${classifierAlgo.toUpperCase()} Classifier...`}</p>
+                    </>
                   )}
-                  {isTraining && <p className="text-amber-400 animate-pulse">{'> Training in progress...'}</p>}
+                  {trainError && <p className="text-red-400">{`> Error: ${trainError}`}</p>}
+                  {trainDone && trainMetrics && (
+                    <>
+                      <p className="text-slate-400">{`> Dataset loaded & cleaned ✓`}</p>
+                      <p className="text-violet-400">{`> K-Means (k=3) converged ✓`}</p>
+                      <p className="text-amber-400">{`> Balanced: ${trainMetrics.config.train_samples.toLocaleString()} rows | test=${trainMetrics.classifier.test_size}% | seed=${trainMetrics.config.random_state}`}</p>
+                      <p className="text-teal-400">{`> ${trainMetrics.classifier.algo.toUpperCase()} Classifier Accuracy: ${trainMetrics.classifier.accuracy}% ✓`}</p>
+                      <p className="text-teal-400">{`> ${trainMetrics.regressor.algo.toUpperCase()} Regressor — MAE: ${trainMetrics.regressor.mae_minutes} min | MAPE: ${trainMetrics.regressor.mape}% | R²: ${trainMetrics.regressor.r2} ✓`}</p>
+                      <p className="text-emerald-400">{`> Model aktif di memory — prediksi menggunakan model baru ✓`}</p>
+                    </>
+                  )}
                 </div>
               )}
               <div className="flex justify-end pt-6 border-t border-slate-800/60 mt-4">

@@ -6,6 +6,15 @@ import joblib
 import json
 import os
 from datetime import datetime, timezone
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score, mean_absolute_percentage_error
+from sklearn.utils import resample
 
 app = Flask(__name__)
 CORS(app)
@@ -463,6 +472,146 @@ def record_feedback():
         f.write(row)
 
     return jsonify({'status': 'success', 'message': 'Feedback recorded successfully'}), 200
+
+
+@app.route('/api/retrain', methods=['POST'])
+def retrain_models():
+    global _clf_models, _reg_models, _MODELS_OK, classifier_feature_names, feature_names
+
+    data           = request.get_json(force=True, silent=True) or {}
+    test_size      = max(0.1, min(0.5, data.get('test_size', 0.2)))
+    random_state   = int(data.get('random_state', 42))
+    scaling_method = data.get('scaling_method', 'standard')
+    clf_algo       = data.get('classifier_algo', 'rf')
+    reg_algo       = data.get('regressor_algo', 'rf')
+    n_estimators   = max(10, min(300, int(data.get('n_estimators', 100))))
+
+    # Cari dataset relatif dari lokasi file ini
+    _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    csv_path = os.path.join(_base, 'notebooks', 'DataSet_Lari.csv')
+    if not os.path.exists(csv_path):
+        return jsonify({'status': 'error', 'message': f'Dataset tidak ditemukan: {csv_path}'}), 500
+
+    try:
+        # ── Load & Clean ────────────────────────────────────────────────────
+        df = pd.read_csv(csv_path, sep=';')
+        df['dt']    = pd.to_datetime(df['timestamp'], format='%d/%m/%Y %H:%M')
+        df['hour']  = df['dt'].dt.hour
+        df = df.dropna(subset=['gender'])
+        df = df[(df['average heart rate (bpm)'] > 0) & df['average heart rate (bpm)'].notna()]
+        df = df[df['average heart rate (bpm)'] <= 220]
+        df['speed_m_s'] = df['distance (m)'] / df['elapsed time (s)']
+        df = df[(df['speed_m_s'] >= 1.0) & (df['speed_m_s'] <= 8.0)]
+        df = df[df['distance (m)'] <= 50000]
+
+        # ── Feature engineering ─────────────────────────────────────────────
+        def kelompokkan_waktu(jam):
+            if 5 <= jam < 11: return 'Pagi'
+            elif 11 <= jam < 16: return 'Siang'
+            return 'Malam'
+
+        df['Waktu_Lari']  = df['hour'].apply(kelompokkan_waktu)
+        df['gender_M']    = (df['gender'] == 'M').astype(int)
+        df['Waktu_Lari_Pagi']  = (df['Waktu_Lari'] == 'Pagi').astype(int)
+        df['Waktu_Lari_Siang'] = (df['Waktu_Lari'] == 'Siang').astype(int)
+
+        # ── KMeans clustering ───────────────────────────────────────────────
+        fitur_klaster = ['distance (m)', 'elevation gain (m)', 'average heart rate (bpm)']
+        scaler_km = StandardScaler()
+        X_scaled  = scaler_km.fit_transform(df[fitur_klaster])
+        km = KMeans(n_clusters=3, random_state=random_state, n_init=10)
+        df['Cluster_ID'] = km.fit_predict(X_scaled)
+        rata_jarak = df.groupby('Cluster_ID')['distance (m)'].mean().sort_values()
+        pemetaan   = {rata_jarak.index[0]: 'Beginner', rata_jarak.index[1]: 'Intermediate', rata_jarak.index[2]: 'Advanced'}
+        df['Tingkat_Pengalaman'] = df['Cluster_ID'].map(pemetaan)
+
+        # ── Balancing ───────────────────────────────────────────────────────
+        counts = df['Tingkat_Pengalaman'].value_counts()
+        n      = min(int(counts.min()), 5000)
+        df_bal = pd.concat([
+            df[df['Tingkat_Pengalaman'] == k].sample(n=n, replace=False, random_state=random_state)
+            for k in ['Beginner', 'Intermediate', 'Advanced']
+        ]).sample(frac=1, random_state=random_state).reset_index(drop=True)
+
+        df_bal['Tingkat_Pengalaman_Intermediate'] = (df_bal['Tingkat_Pengalaman'] == 'Intermediate').astype(int)
+        df_bal['Tingkat_Pengalaman_Advanced']     = (df_bal['Tingkat_Pengalaman'] == 'Advanced').astype(int)
+
+        # ── Optional scaling ────────────────────────────────────────────────
+        clf_features = ['distance (m)', 'elevation gain (m)', 'average heart rate (bpm)']
+        reg_features = ['distance (m)', 'elevation gain (m)', 'gender_M', 'Waktu_Lari_Pagi',
+                        'Waktu_Lari_Siang', 'average heart rate (bpm)',
+                        'Tingkat_Pengalaman_Intermediate', 'Tingkat_Pengalaman_Advanced']
+
+        X_c = df_bal[clf_features]
+        y_c = df_bal['Tingkat_Pengalaman']
+        X_r = df_bal[reg_features]
+        y_r = df_bal['elapsed time (s)']
+
+        if scaling_method in ('standard', 'minmax'):
+            _scaler = StandardScaler() if scaling_method == 'standard' else MinMaxScaler()
+            X_c = pd.DataFrame(_scaler.fit_transform(X_c), columns=clf_features)
+            X_r = pd.DataFrame(_scaler.fit_transform(X_r), columns=reg_features)
+
+        X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X_c, y_c, test_size=test_size, random_state=random_state, stratify=y_c)
+        X_train_r, X_test_r, y_train_r, y_test_r = train_test_split(X_r, y_r, test_size=test_size, random_state=random_state)
+
+        # ── Train Classifier ────────────────────────────────────────────────
+        if clf_algo == 'svm':
+            new_clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True, random_state=random_state)
+        elif clf_algo == 'knn':
+            new_clf = KNeighborsClassifier(n_neighbors=5)
+        else:
+            new_clf = RandomForestClassifier(n_estimators=n_estimators, random_state=random_state, class_weight='balanced', n_jobs=-1)
+        new_clf.fit(X_train_c, y_train_c)
+        clf_acc = accuracy_score(y_test_c, new_clf.predict(X_test_c))
+
+        # ── Train Regressor ─────────────────────────────────────────────────
+        if reg_algo == 'lr':
+            new_reg = LinearRegression()
+        elif reg_algo == 'gb':
+            new_reg = GradientBoostingRegressor(n_estimators=n_estimators, random_state=random_state)
+        else:
+            new_reg = RandomForestRegressor(n_estimators=n_estimators, random_state=random_state, n_jobs=-1)
+        new_reg.fit(X_train_r, y_train_r)
+        pred_r   = new_reg.predict(X_test_r)
+        reg_mae  = mean_absolute_error(y_test_r, pred_r)
+        reg_mape = mean_absolute_percentage_error(y_test_r, pred_r) * 100
+        reg_r2   = r2_score(y_test_r, pred_r)
+
+        # ── Update in-memory models ─────────────────────────────────────────
+        _clf_models[clf_algo] = new_clf
+        _reg_models[reg_algo] = new_reg
+        classifier_feature_names = clf_features
+        feature_names            = reg_features
+        _MODELS_OK = True
+
+        return jsonify({
+            'status': 'success',
+            'metrics': {
+                'classifier': {
+                    'algo'    : clf_algo,
+                    'accuracy': round(clf_acc * 100, 2),
+                    'samples' : len(X_train_c),
+                    'test_size': int(test_size * 100),
+                },
+                'regressor': {
+                    'algo'       : reg_algo,
+                    'mae_minutes': round(reg_mae / 60, 2),
+                    'mape'       : round(reg_mape, 2),
+                    'r2'         : round(reg_r2, 4),
+                    'samples'    : len(X_train_r),
+                },
+                'config': {
+                    'random_state'  : random_state,
+                    'scaling_method': scaling_method,
+                    'n_estimators'  : n_estimators if clf_algo in ('rf',) or reg_algo in ('rf', 'gb') else 'N/A',
+                    'train_samples' : n * 3,
+                }
+            }
+        }), 200
+
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 500
 
 
 if __name__ == '__main__':
